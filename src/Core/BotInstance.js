@@ -5,7 +5,9 @@ const {
     fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
+const qrcodeTerminal = require('qrcode-terminal');
+const QRCode = require('qrcode');
+const fs = require('fs');
 const MessageStack = require('./MessageStack');
 const path = require('path');
 
@@ -39,7 +41,22 @@ class BotInstance {
 
             if (qr) {
                 console.log(`\n=== ESCANEA ESTE QR PARA EL NÚMERO ${this.number} ===`);
-                qrcode.generate(qr, { small: true });
+                qrcodeTerminal.generate(qr, { small: true });
+
+                // Generar versión HTML (Imagen perfecta)
+                const fileName = `scan-me-${this.sessionId}.html`;
+                const filePath = path.join(__dirname, `../../${fileName}`);
+                QRCode.toDataURL(qr).then(url => {
+                    const html = `<html><body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f0f2f5;">
+                        <div style="background:white;padding:20px;border-radius:15px;text-align:center;box-shadow:0 10px 25px rgba(0,0,0,0.1);font-family:sans-serif;">
+                            <h2>Escanear para: ${this.number}</h2>
+                            <img src="${url}" style="width:300px;height:300px;display:block;margin:10px auto;" />
+                            <p style="color:#666;">Actualiza este archivo para ver un nuevo QR si expira.</p>
+                        </div>
+                    </body></html>`;
+                    fs.writeFileSync(filePath, html);
+                    console.log(`✅ QR generado en imagen: ${fileName} (Ábrelo con 'View' en cPanel)`);
+                });
             }
 
             if (connection === 'close') {

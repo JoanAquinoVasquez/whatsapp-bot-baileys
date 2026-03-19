@@ -9,8 +9,8 @@ const BotInstance = require('./src/Core/BotInstance');
 
 // 1. Configuración de Sesiones
 const tokens = {
-    'session-1': process.env.FIRST_NUMBER || '924545013',
-    'session-2': process.env.SECOND_NUMBER || '995901454'
+    'session-1': process.env.FIRST_NUMBER,
+    'session-2': process.env.SECOND_NUMBER
 };
 
 // 2. Punto de entrada (Inicie el bot)
