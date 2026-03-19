@@ -1,3 +1,8 @@
+// Polyfill for Node 16 compatibility (ensuring crypto is available globally)
+if (!global.crypto) {
+    global.crypto = require('crypto').webcrypto || require('crypto');
+}
+
 require('dotenv').config();
 const ApiService = require('./src/Services/ApiService');
 const BotInstance = require('./src/Core/BotInstance');
