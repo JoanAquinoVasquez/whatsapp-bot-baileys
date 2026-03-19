@@ -20,15 +20,16 @@ class BotInstance {
     }
 
     async initialize() {
+        console.log(`Cargando sesión desde: ${this.authDir}`);
         const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
         const { version } = await fetchLatestBaileysVersion();
 
         this.sock = makeWASocket({
             version,
-            logger: pino({ level: 'silent' }),
+            logger: pino({ level: 'warn' }),
             printQRInTerminal: false,
             auth: state,
-            browser: ["EPG UNPRG Bot", "Chrome", "1.0.0"]
+            browser: ["Ubuntu", "Chrome", "20.0.04"]
         });
 
         this.sock.ev.on('creds.update', saveCreds);
