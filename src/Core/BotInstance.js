@@ -2,7 +2,8 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    makeInMemoryStore
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -19,6 +20,7 @@ class BotInstance {
         this.botStartTime = botStartTime;
         this.messageStack = new MessageStack(10000);
         this.authDir = path.join(__dirname, `../../sessions/${sessionId}`);
+        this.store = makeInMemoryStore({}); // Para mapear LIDs a números de teléfono
     }
 
     async initialize() {
@@ -35,6 +37,7 @@ class BotInstance {
         });
 
         this.sock.ev.on('creds.update', saveCreds);
+        this.store.bind(this.sock.ev); // Vincular el almacén a los eventos del bot
 
         this.sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect, qr } = update;
@@ -97,9 +100,15 @@ class BotInstance {
             await this.sock.sendPresenceUpdate('composing', chatId);
 
             // Extraer el identificador del usuario de forma robusta
-            // Priorizamos 'participant' (emisor real) si existe, de lo contrario usamos 'chatId'
             const senderJid = originalMsg.key.participant || chatId;
-            const realNumber = senderJid.split('@')[0].split(':')[0];
+
+            // Intentamos obtener el número real desde el almacén de contactos
+            const contact = this.store.contacts[senderJid];
+            let realNumber = senderJid.split('@')[0].split(':')[0];
+
+            if (contact && contact.id && contact.id.includes('@s.whatsapp.net')) {
+                realNumber = contact.id.split('@')[0].split(':')[0];
+            }
 
             const reply = await this.apiService.sendMessage(content, realNumber);
 
