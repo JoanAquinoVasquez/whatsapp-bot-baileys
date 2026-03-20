@@ -96,7 +96,11 @@ class BotInstance {
         try {
             await this.sock.sendPresenceUpdate('composing', chatId);
 
-            const realNumber = chatId.split('@')[0];
+            // Extraer el identificador del usuario de forma robusta
+            // Priorizamos 'participant' (emisor real) si existe, de lo contrario usamos 'chatId'
+            const senderJid = originalMsg.key.participant || chatId;
+            const realNumber = senderJid.split('@')[0].split(':')[0];
+
             const reply = await this.apiService.sendMessage(content, realNumber);
 
             if (reply && reply.trim().length > 0) {
