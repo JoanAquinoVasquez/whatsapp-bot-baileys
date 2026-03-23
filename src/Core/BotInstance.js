@@ -112,7 +112,7 @@ class BotInstance {
 
         if (msg.key.fromMe) {
             // Si TÚ respondes algo manual, activamos el mando humano
-            if (body.toLowerCase().includes('#bot#')) {
+            if (body.toLowerCase().includes('#bot')) {
                 this.mutedUsers.delete(chatId);
                 console.log(`🤖 Bot reactivado para: ${chatId}`);
             } else {
