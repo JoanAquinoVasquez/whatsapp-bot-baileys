@@ -46,10 +46,19 @@ class BotInstance {
         }
     }
 
-    // Helper para unificar IDs (LID vs JID)
+    // Helper para unificar IDs (LID vs JID) de forma inteligente
     _getCleanId(jid) {
         if (!jid) return 'unknown';
-        // Limpiamos el :X (multi-device) y el @jid/@lid
+
+        // 1. Intentar resolver el LID a través del store si es posible
+        if (jid.includes('@lid')) {
+            const contact = this.store.contacts[jid];
+            if (contact && contact.id && contact.id.includes('@s.whatsapp.net')) {
+                return contact.id.split('@')[0].split(':')[0];
+            }
+        }
+
+        // 2. Limpieza estándar para JIDs y LIDs no resueltos
         const [cleanPart] = jid.split('@');
         return cleanPart.split(':')[0];
     }
@@ -122,7 +131,11 @@ class BotInstance {
             // Si TÚ respondes algo manual, activamos o desactivamos el mando humano
             if (body.toLowerCase().includes('#bot')) {
                 this.mutedUsers.delete(cleanId);
-                console.log(`🤖 Bot reactivado para: ${cleanId}`);
+                // Intento extra por si hay variaciones del ID
+                const potentialLid = chatId.includes('@lid') ? chatId.split('@')[0] : null;
+                if (potentialLid) this.mutedUsers.delete(potentialLid);
+
+                console.log(`🤖 Bot reactivado para: ${cleanId} (Manual)`);
             } else {
                 // Silenciamos por 1 hora cada vez que tú escribas algo manual
                 const expiresAt = now + (1 * 60 * 60 * 1000);
