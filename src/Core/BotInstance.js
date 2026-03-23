@@ -46,6 +46,14 @@ class BotInstance {
         }
     }
 
+    // Helper para unificar IDs (LID vs JID)
+    _getCleanId(jid) {
+        if (!jid) return 'unknown';
+        // Limpiamos el :X (multi-device) y el @jid/@lid
+        const [cleanPart] = jid.split('@');
+        return cleanPart.split(':')[0];
+    }
+
     async initialize() {
         console.log(`Cargando sesión desde: ${this.authDir}`);
         const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
@@ -107,31 +115,31 @@ class BotInstance {
         const body = msg.message.conversation || msg.message.extendedTextMessage?.text;
         if (!body) return;
 
-        // 1. Lógica de Silencio para Mando Humano
+        const cleanId = this._getCleanId(chatId);
         const now = Date.now();
 
         if (msg.key.fromMe) {
-            // Si TÚ respondes algo manual, activamos el mando humano
+            // Si TÚ respondes algo manual, activamos o desactivamos el mando humano
             if (body.toLowerCase().includes('#bot')) {
-                this.mutedUsers.delete(chatId);
-                console.log(`🤖 Bot reactivado para: ${chatId}`);
+                this.mutedUsers.delete(cleanId);
+                console.log(`🤖 Bot reactivado para: ${cleanId}`);
             } else {
-                // Silenciamos por 24 horas cada vez que tú escribas algo manual
-                const expiresAt = now + (24 * 60 * 60 * 1000);
-                this.mutedUsers.set(chatId, expiresAt);
-                console.log(`🔇 Mando humano activado para: ${chatId}. Bot silenciado hasta ${new Date(expiresAt).toLocaleString()}`);
+                // Silenciamos por 1 hora cada vez que tú escribas algo manual
+                const expiresAt = now + (1 * 60 * 60 * 1000);
+                this.mutedUsers.set(cleanId, expiresAt);
+                console.log(`🔇 Mando humano activado para: ${cleanId}. Bot silenciado hasta ${new Date(expiresAt).toLocaleString()}`);
             }
             this._saveMutedUsers();
-            return; // No procesamos más si somos nosotros hablando
+            return;
         }
 
         // 2. Verificar si el usuario está silenciado
-        if (this.mutedUsers.has(chatId)) {
-            const expiry = this.mutedUsers.get(chatId);
+        if (this.mutedUsers.has(cleanId)) {
+            const expiry = this.mutedUsers.get(cleanId);
             if (now < expiry) {
                 return; // El bot se queda calladito
             } else {
-                this.mutedUsers.delete(chatId);
+                this.mutedUsers.delete(cleanId);
                 this._saveMutedUsers();
             }
         }
@@ -144,26 +152,15 @@ class BotInstance {
         await this.sock.sendPresenceUpdate('composing', chatId);
 
         await this.messageStack.add(chatId, body, async (fullContent) => {
-            await this._processAndReply(msg, chatId, fullContent);
+            await this._processAndReply(msg, chatId, cleanId, fullContent);
         });
     }
 
-    async _processAndReply(originalMsg, chatId, content) {
+    async _processAndReply(originalMsg, chatId, cleanId, content) {
         try {
             await this.sock.sendPresenceUpdate('composing', chatId);
 
-            // Extraer el identificador del usuario de forma robusta
-            const senderJid = originalMsg.key.participant || chatId;
-
-            // Intentamos obtener el número real desde el almacén de contactos
-            const contact = this.store.contacts[senderJid];
-            let realNumber = senderJid.split('@')[0].split(':')[0];
-
-            if (contact && contact.id && contact.id.includes('@s.whatsapp.net')) {
-                realNumber = contact.id.split('@')[0].split(':')[0];
-            }
-
-            const reply = await this.apiService.sendMessage(content, realNumber);
+            const reply = await this.apiService.sendMessage(content, cleanId);
 
             if (reply && reply.trim().length > 0) {
                 const formattedReply = reply.replace(/\*\*/g, '*');
