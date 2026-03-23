@@ -20,7 +20,30 @@ class BotInstance {
         this.botStartTime = botStartTime;
         this.messageStack = new MessageStack(10000);
         this.authDir = path.join(__dirname, `../../sessions/${sessionId}`);
-        this.store = makeInMemoryStore({}); // Para mapear LIDs a números de teléfono
+        this.store = makeInMemoryStore({});
+        this.mutedFile = path.join(__dirname, `../../muted-users.json`);
+        this.mutedUsers = new Map();
+        this._loadMutedUsers();
+    }
+
+    _loadMutedUsers() {
+        try {
+            if (fs.existsSync(this.mutedFile)) {
+                const data = JSON.parse(fs.readFileSync(this.mutedFile, 'utf8'));
+                this.mutedUsers = new Map(Object.entries(data));
+            }
+        } catch (e) {
+            console.error('Error cargando usuarios silenciados:', e.message);
+        }
+    }
+
+    _saveMutedUsers() {
+        try {
+            const data = Object.fromEntries(this.mutedUsers);
+            fs.writeFileSync(this.mutedFile, JSON.stringify(data), 'utf8');
+        } catch (e) {
+            console.error('Error guardando usuarios silenciados:', e.message);
+        }
     }
 
     async initialize() {
@@ -76,16 +99,46 @@ class BotInstance {
 
     async _handleMessages(m) {
         const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+        if (!msg.message) return;
 
         const chatId = msg.key.remoteJid;
         if (chatId.includes('@g.us')) return;
 
-        const timestamp = msg.messageTimestamp;
-        if (timestamp < this.botStartTime) return;
-
         const body = msg.message.conversation || msg.message.extendedTextMessage?.text;
         if (!body) return;
+
+        // 1. Lógica de Silencio para Mando Humano
+        const now = Date.now();
+
+        if (msg.key.fromMe) {
+            // Si TÚ respondes algo manual, activamos el mando humano
+            if (body.toLowerCase().includes('#bot#')) {
+                this.mutedUsers.delete(chatId);
+                console.log(`🤖 Bot reactivado para: ${chatId}`);
+            } else {
+                // Silenciamos por 24 horas cada vez que tú escribas algo manual
+                const expiresAt = now + (24 * 60 * 60 * 1000);
+                this.mutedUsers.set(chatId, expiresAt);
+                console.log(`🔇 Mando humano activado para: ${chatId}. Bot silenciado hasta ${new Date(expiresAt).toLocaleString()}`);
+            }
+            this._saveMutedUsers();
+            return; // No procesamos más si somos nosotros hablando
+        }
+
+        // 2. Verificar si el usuario está silenciado
+        if (this.mutedUsers.has(chatId)) {
+            const expiry = this.mutedUsers.get(chatId);
+            if (now < expiry) {
+                return; // El bot se queda calladito
+            } else {
+                this.mutedUsers.delete(chatId);
+                this._saveMutedUsers();
+            }
+        }
+
+        // 3. Ignorar mensajes recibidos ANTES de que el bot arrancara
+        const timestamp = msg.messageTimestamp;
+        if (timestamp < this.botStartTime) return;
 
         // Feedback visual: escribiendo
         await this.sock.sendPresenceUpdate('composing', chatId);
