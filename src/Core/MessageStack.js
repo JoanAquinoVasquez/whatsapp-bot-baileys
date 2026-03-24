@@ -4,19 +4,20 @@ class MessageStack {
         this.stacks = new Map();
     }
 
-    async add(chatId, messageBody, onComplete) {
+    async add(chatId, messageBody, onComplete, customDebounce = null) {
+        const time = customDebounce || this.debounceTime;
         if (this.stacks.has(chatId)) {
             const stack = this.stacks.get(chatId);
             clearTimeout(stack.timer);
             stack.messages.push(messageBody);
 
-            stack.timer = setTimeout(() => this._execute(chatId, onComplete), this.debounceTime);
+            stack.timer = setTimeout(() => this._execute(chatId, onComplete), time);
             return;
         }
 
         this.stacks.set(chatId, {
             messages: [messageBody],
-            timer: setTimeout(() => this._execute(chatId, onComplete), this.debounceTime)
+            timer: setTimeout(() => this._execute(chatId, onComplete), time)
         });
     }
 
@@ -27,6 +28,13 @@ class MessageStack {
         const fullContent = stack.messages.join(' ');
         this.stacks.delete(chatId);
         onComplete(fullContent);
+    }
+
+    cancel(chatId) {
+        if (this.stacks.has(chatId)) {
+            clearTimeout(this.stacks.get(chatId).timer);
+            this.stacks.delete(chatId);
+        }
     }
 }
 

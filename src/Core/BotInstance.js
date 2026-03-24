@@ -50,17 +50,21 @@ class BotInstance {
     _getCleanId(jid) {
         if (!jid) return 'unknown';
 
-        // 1. Intentar resolver el LID a través del store si es posible
+        // 1. Limpieza estándar para JIDs y LIDs
+        let [idPart] = jid.split('@');
+        idPart = idPart.split(':')[0];
+
+        // 2. Intentar buscar en contactos si es un LID
         if (jid.includes('@lid')) {
             const contact = this.store.contacts[jid];
             if (contact && contact.id && contact.id.includes('@s.whatsapp.net')) {
-                return contact.id.split('@')[0].split(':')[0];
+                const resolvedId = contact.id.split('@')[0].split(':')[0];
+                console.log(`DEBUG: ID resuelto de LID ${jid} -> ${resolvedId}`);
+                return resolvedId;
             }
         }
 
-        // 2. Limpieza estándar para JIDs y LIDs no resueltos
-        const [cleanPart] = jid.split('@');
-        return cleanPart.split(':')[0];
+        return idPart;
     }
 
     async initialize() {
@@ -129,31 +133,43 @@ class BotInstance {
 
         if (msg.key.fromMe) {
             // Si TÚ respondes algo manual, activamos o desactivamos el mando humano
-            if (body.toLowerCase().includes('#bot')) {
+            if (body.toLowerCase().includes('#epg')) {
                 this.mutedUsers.delete(cleanId);
+                this.messageStack.cancel(chatId); // No dejar nada pendiente del bot
                 // Intento extra por si hay variaciones del ID
-                const potentialLid = chatId.includes('@lid') ? chatId.split('@')[0] : null;
-                if (potentialLid) this.mutedUsers.delete(potentialLid);
+                if (chatId.includes('@lid')) {
+                    // Limpiar el original tmb
+                    this.mutedUsers.delete(chatId.split('@')[0]);
+                }
 
-                console.log(`🤖 Bot reactivado para: ${cleanId} (Manual)`);
+                console.log(`🤖 Bot reactivado EXPLÍCITAMENTE para: ${cleanId} (Manual)`);
+                await this.sock.sendMessage(chatId, { text: "🤖 *Asistente Virtual reactivado.*" }, { quoted: msg });
             } else {
-                // Silenciamos por 1 hora cada vez que tú escribas algo manual
-                const expiresAt = now + (1 * 60 * 60 * 1000);
+                // Silenciamos por 5 minutos cada vez que tú escribas algo manual
+                const expiresAt = now + (5 * 60 * 1000);
                 this.mutedUsers.set(cleanId, expiresAt);
+                this.messageStack.cancel(chatId); // Si yo estoy contestando, el bot se calla lo que tuviera en espera
                 console.log(`🔇 Mando humano activado para: ${cleanId}. Bot silenciado hasta ${new Date(expiresAt).toLocaleString()}`);
             }
             this._saveMutedUsers();
             return;
         }
 
+        console.log(`📩 Mensaje de ${cleanId}: "${body}"`);
+
         // 2. Verificar si el usuario está silenciado
         if (this.mutedUsers.has(cleanId)) {
             const expiry = this.mutedUsers.get(cleanId);
             if (now < expiry) {
-                return; // El bot se queda calladito
+                console.log(`⏳ Bot en espera (5 min de cortesía al humano) para ${cleanId}`);
+                await this.messageStack.add(chatId, body, async (fullContent) => {
+                    await this._processAndReply(msg, chatId, cleanId, fullContent);
+                }, 5 * 60 * 1000); // 5 minutos de espera si el humano está activo (Mando Humano)
+                return;
             } else {
                 this.mutedUsers.delete(cleanId);
                 this._saveMutedUsers();
+                console.log(`⏳ Silencio expirado para ${cleanId}. Reactivando.`);
             }
         }
 
@@ -176,8 +192,11 @@ class BotInstance {
             const reply = await this.apiService.sendMessage(content, cleanId);
 
             if (reply && reply.trim().length > 0) {
+                console.log(`🤖 Respondiendo a ${cleanId}: "${reply.substring(0, 50)}..."`);
                 const formattedReply = reply.replace(/\*\*/g, '*');
                 await this.sock.sendMessage(chatId, { text: formattedReply }, { quoted: originalMsg });
+            } else {
+                console.log(`😶 Backend devolvió respuesta VACÍA para ${cleanId}`);
             }
 
             await this.sock.sendPresenceUpdate('paused', chatId);
