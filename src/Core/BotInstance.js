@@ -189,12 +189,23 @@ class BotInstance {
         try {
             await this.sock.sendPresenceUpdate('composing', chatId);
 
-            const reply = await this.apiService.sendMessage(content, cleanId);
+            const replyData = await this.apiService.sendMessage(content, cleanId);
+            const reply = replyData?.reply;
+            const handover = replyData?.handover;
 
             if (reply && reply.trim().length > 0) {
                 console.log(`🤖 Respondiendo a ${cleanId}: "${reply.substring(0, 50)}..."`);
                 const formattedReply = reply.replace(/\*\*/g, '*');
                 await this.sock.sendMessage(chatId, { text: formattedReply }, { quoted: originalMsg });
+
+                // Si la IA activó el handover, silenciamos al bot para este usuario
+                if (handover) {
+                    const now = Date.now();
+                    const expiresAt = now + (24 * 60 * 60 * 1000); // 24 horas de silencio por defecto para handover
+                    this.mutedUsers.set(cleanId, expiresAt);
+                    this._saveMutedUsers();
+                    console.log(`🔇 Mando humano activado via IA para: ${cleanId}. Bot silenciado por 24h.`);
+                }
             } else {
                 console.log(`😶 Backend devolvió respuesta VACÍA para ${cleanId}`);
             }

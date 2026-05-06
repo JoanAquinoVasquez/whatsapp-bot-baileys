@@ -20,7 +20,7 @@ class ApiService {
                 timeout: 30000
             });
 
-            return response.data && response.data.success ? response.data.data.reply : null;
+            return response.data && response.data.success ? response.data.data : null;
         } catch (error) {
             console.error('❌ Error API Laravel/Gemini:', error.message);
             return null;
