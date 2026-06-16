@@ -147,6 +147,12 @@ class BotInstance {
         const now = Date.now();
 
         if (msg.key.fromMe) {
+            // Ignorar si es un mensaje enviado automáticamente por el propio bot
+            const isBotMessage = body.includes('🤖') || body.includes('⏳') || body.includes('❌');
+            if (isBotMessage) {
+                return;
+            }
+
             // Si TÚ respondes algo manual, activamos o desactivamos el mando humano
             if (body.toLowerCase().includes('#epg')) {
                 this.mutedUsers.delete(cleanId);
