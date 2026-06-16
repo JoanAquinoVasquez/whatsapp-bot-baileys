@@ -67,6 +67,15 @@ class BotInstance {
         return idPart;
     }
 
+    _isAdmin(cleanId) {
+        const adminNumbersStr = process.env.ADMIN_NUMBERS || '';
+        const adminNumbers = adminNumbersStr.split(',').map(n => n.trim());
+        return adminNumbers.some(adminNum => {
+            if (!adminNum) return false;
+            return cleanId === adminNum || cleanId.endsWith(adminNum);
+        });
+    }
+
     async initialize() {
         console.log(`Cargando sesión desde: ${this.authDir}`);
         const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
@@ -156,6 +165,42 @@ class BotInstance {
         }
 
         console.log(`📩 Mensaje de ${cleanId}: "${body}"`);
+
+        // Interceptar comandos administrativos (ej. Reporte Top Programas)
+        const normalizedBody = body.toLowerCase().trim();
+        const isAdminCommand = normalizedBody === '/reportetop' || 
+                             normalizedBody === 'reporte top' || 
+                             normalizedBody === 'reporte top programas' ||
+                             normalizedBody === 'reporte de programas top';
+
+        if (isAdminCommand) {
+            if (this._isAdmin(cleanId)) {
+                console.log(`👑 Comando admin de ${cleanId} detectado: "${normalizedBody}"`);
+                await this.sock.sendPresenceUpdate('composing', chatId);
+                await this.sock.sendMessage(chatId, { text: "⏳ *Generando el reporte de programas top en PDF...*" }, { quoted: msg });
+                
+                try {
+                    const pdfBuffer = await this.apiService.getTopProgramasPdf();
+                    if (pdfBuffer) {
+                        const dateStr = new Date().toLocaleDateString('es-PE', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
+                        await this.sock.sendMessage(chatId, {
+                            document: pdfBuffer,
+                            mimetype: 'application/pdf',
+                            fileName: `reporte_top_programas_${dateStr}.pdf`,
+                            caption: "🤖 *Aquí tienes el reporte top de programas solicitado.*"
+                        }, { quoted: msg });
+                    } else {
+                        await this.sock.sendMessage(chatId, { text: "❌ *Error al obtener el reporte desde el servidor.*" }, { quoted: msg });
+                    }
+                } catch (error) {
+                    console.error("❌ Error al enviar PDF del reporte:", error);
+                    await this.sock.sendMessage(chatId, { text: "❌ *Hubo un error al generar o enviar el archivo PDF.*" }, { quoted: msg });
+                }
+            } else {
+                console.log(`⚠️ Usuario no autorizado ${cleanId} intentó ejecutar comando: "${normalizedBody}"`);
+            }
+            return; // Terminar procesamiento, no pasarlo a la IA ni encolarlo
+        }
 
         // 2. Verificar si el usuario está silenciado
         if (this.mutedUsers.has(cleanId)) {

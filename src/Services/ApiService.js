@@ -26,6 +26,23 @@ class ApiService {
             return null;
         }
     }
+
+    async getTopProgramasPdf() {
+        try {
+            const response = await axios.get(`${this.backendUrl}/chatbot/reporte-programas-top`, {
+                headers: {
+                    'X-Chatbot-Token': this.chatbotToken
+                },
+                responseType: 'arraybuffer',
+                timeout: 45000
+            });
+
+            return response.data ? Buffer.from(response.data) : null;
+        } catch (error) {
+            console.error('❌ Error al obtener PDF de programas top:', error.message);
+            return null;
+        }
+    }
 }
 
 module.exports = ApiService;
