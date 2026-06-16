@@ -70,10 +70,16 @@ class BotInstance {
     _isAdmin(cleanId) {
         const adminNumbersStr = process.env.ADMIN_NUMBERS || '';
         const adminNumbers = adminNumbersStr.split(',').map(n => n.trim());
-        return adminNumbers.some(adminNum => {
+        console.log(`🔍 [DEBUG _isAdmin] Verificando si ${cleanId} es administrador.`);
+        console.log(`🔍 [DEBUG _isAdmin] Lista de admins configurados:`, adminNumbers);
+        const isMatch = adminNumbers.some(adminNum => {
             if (!adminNum) return false;
-            return cleanId === adminNum || cleanId.endsWith(adminNum);
+            const match = cleanId === adminNum || cleanId.endsWith(adminNum);
+            if (match) console.log(`   -> Match encontrado con: ${adminNum}`);
+            return match;
         });
+        console.log(`🔍 [DEBUG _isAdmin] Resultado para ${cleanId}: ${isMatch ? 'AUTORIZADO' : 'NO AUTORIZADO'}`);
+        return isMatch;
     }
 
     async initialize() {
@@ -172,6 +178,8 @@ class BotInstance {
                              normalizedBody === 'reporte top' || 
                              normalizedBody === 'reporte top programas' ||
                              normalizedBody === 'reporte de programas top';
+
+        console.log(`🔍 [DEBUG _handleMessages] normalizedBody: "${normalizedBody}", isAdminCommand: ${isAdminCommand}`);
 
         if (isAdminCommand) {
             if (this._isAdmin(cleanId)) {
