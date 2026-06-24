@@ -122,9 +122,24 @@ class BotInstance {
             }
 
             if (connection === 'close') {
-                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-                console.log('Conexión cerrada. ¿Reconectando?', shouldReconnect);
-                if (shouldReconnect) this.initialize();
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                console.log(`Conexión cerrada para la sesión ${this.sessionId}. Código: ${statusCode}. ¿Reconectando?: ${shouldReconnect}`);
+                
+                if (shouldReconnect) {
+                    this.initialize();
+                } else {
+                    console.log(`⚠️ Sesión inválida o cerrada (Logged Out). Limpiando credenciales en: ${this.authDir}`);
+                    try {
+                        if (fs.existsSync(this.authDir)) {
+                            fs.rmSync(this.authDir, { recursive: true, force: true });
+                        }
+                    } catch (err) {
+                        console.error('Error al borrar la carpeta de sesión:', err.message);
+                    }
+                    console.log('🔄 Re-inicializando para generar un nuevo código QR...');
+                    this.initialize();
+                }
             } else if (connection === 'open') {
                 console.log(`¡Bot conectado via Baileys para el número ${this.number}!`);
             }
