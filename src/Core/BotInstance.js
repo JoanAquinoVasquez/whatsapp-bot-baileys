@@ -302,8 +302,8 @@ class BotInstance {
         const msg = m.messages[0];
         if (!msg.message) return;
 
-        const chatId = msg.key.remoteJid;
-        if (chatId.includes('@g.us')) return;
+        const chatId = msg.key?.remoteJid;
+        if (!chatId || chatId.includes('@g.us')) return;
 
         // Intentar capturar el JID real alternativo si el mensaje viene de un LID
         if (chatId.includes('@lid')) {
