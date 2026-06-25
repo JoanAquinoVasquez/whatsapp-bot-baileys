@@ -2,8 +2,7 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion,
-    makeInMemoryStore
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -20,7 +19,6 @@ class BotInstance {
         this.botStartTime = botStartTime;
         this.messageStack = new MessageStack(10000);
         this.authDir = path.join(__dirname, `../../sessions/${sessionId}`);
-        this.store = makeInMemoryStore({});
         this.mutedFile = path.join(__dirname, `../../muted-users.json`);
         this.mutedUsers = new Map();
         this.lidToJidMap = new Map();  // Mapa LID -> JID real (@s.whatsapp.net)
@@ -95,19 +93,26 @@ class BotInstance {
     _getCleanId(jid) {
         if (!jid) return 'unknown';
 
-        // 1. Limpieza estándar para JIDs y LIDs
-        let [idPart] = jid.split('@');
-        idPart = idPart.split(':')[0];
-
-        // 2. Intentar buscar en contactos si es un LID
+        // 1. Si es un LID, intentar buscar en nuestro mapa persistido primero
         if (jid.includes('@lid')) {
-            const contact = this.store.contacts[jid];
-            if (contact && contact.id && contact.id.includes('@s.whatsapp.net')) {
-                const resolvedId = contact.id.split('@')[0].split(':')[0];
-                console.log(`DEBUG: ID resuelto de LID ${jid} -> ${resolvedId}`);
+            if (this.lidToJidMap.has(jid)) {
+                const resolved = this.lidToJidMap.get(jid);
+                const resolvedId = resolved.split('@')[0].split(':')[0];
+                console.log(`DEBUG _getCleanId: LID ${jid} resuelto via lidToJidMap -> ${resolvedId}`);
+                return resolvedId;
+            }
+            const lidNum = jid.split('@')[0].split(':')[0];
+            if (this.lidToJidMap.has(lidNum)) {
+                const resolved = this.lidToJidMap.get(lidNum);
+                const resolvedId = resolved.split('@')[0].split(':')[0];
+                console.log(`DEBUG _getCleanId: LID ${jid} (num) resuelto via lidToJidMap -> ${resolvedId}`);
                 return resolvedId;
             }
         }
+
+        // 2. Limpieza estándar para JIDs y LIDs
+        let [idPart] = jid.split('@');
+        idPart = idPart.split(':')[0];
 
         return idPart;
     }
@@ -132,27 +137,7 @@ class BotInstance {
             return resolved;
         }
 
-        // 2. Buscar en contactos del store
-        const contact = this.store.contacts[chatId];
-        if (contact && contact.id && contact.id.includes('@s.whatsapp.net')) {
-            this.lidToJidMap.set(chatId, contact.id);
-            this.lidToJidMap.set(lidNum, contact.id);
-            this._saveLidMap();
-            console.log(`📱 LID resuelto via store: ${chatId} -> ${contact.id}`);
-            return contact.id;
-        }
-
-        // 3. Buscar en todos los contactos del store por LID inverso
-        for (const [key, val] of Object.entries(this.store.contacts || {})) {
-            if (key.includes('@s.whatsapp.net') && val.lid && val.lid.includes(lidNum)) {
-                this.lidToJidMap.set(chatId, key);
-                this.lidToJidMap.set(lidNum, key);
-                this._saveLidMap();
-                console.log(`📱 LID resuelto via búsqueda inversa: ${chatId} -> ${key}`);
-                return key;
-            }
-        }
-
+        // 2. Fallback: avisar que no se pudo resolver y retornar el ID original
         console.log(`⚠️ No se pudo resolver LID: ${chatId} - el mensaje podría no entregarse`);
         return chatId;
     }
@@ -182,11 +167,13 @@ class BotInstance {
             logger: pino({ level: 'warn' }),
             printQRInTerminal: false,
             auth: state,
-            browser: ["Ubuntu", "Chrome", "20.0.04"]
+            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            syncFullHistory: false
         });
 
         this.sock.ev.on('creds.update', saveCreds);
-        this.store.bind(this.sock.ev); // Vincular el almacén a los eventos del bot
 
         // === MAPEO LID -> JID: Escuchar sincronización de contactos ===
         this.sock.ev.on('contacts.set', ({ contacts }) => {
@@ -284,14 +271,21 @@ class BotInstance {
     async _retryWithAlternativeJid(pending) {
         try {
             const { chatId, cleanId, text } = pending;
-            // Construir JID con el cleanId (número limpio)
+            const lidNum = chatId.split('@')[0].split(':')[0];
+
+            // Si cleanId es igual al lidNum, no se pudo resolver un JID real de teléfono.
+            // Enviar a cleanId@s.whatsapp.net sería enviar al número de LID en el dominio de teléfonos, lo cual fallará.
+            if (cleanId === lidNum) {
+                console.log(`⚠️ No se puede reintentar con JID alternativo: cleanId es igual al LID (${cleanId}).`);
+                return;
+            }
+
             const altJid = cleanId + '@s.whatsapp.net';
             console.log(`🔄 Reintentando envío a JID alternativo: ${altJid} (original: ${chatId})`);
             const result = await this.sock.sendMessage(altJid, { text });
             if (result) {
                 // Guardar el mapeo para futuros mensajes
                 this.lidToJidMap.set(chatId, altJid);
-                const lidNum = chatId.split('@')[0].split(':')[0];
                 this.lidToJidMap.set(lidNum, altJid);
                 this._saveLidMap();
                 console.log(`✅ Retry exitoso! Mapeo guardado: ${chatId} -> ${altJid}`);
@@ -307,6 +301,18 @@ class BotInstance {
 
         const chatId = msg.key.remoteJid;
         if (chatId.includes('@g.us')) return;
+
+        // Intentar capturar el JID real alternativo si el mensaje viene de un LID
+        if (chatId.includes('@lid')) {
+            const altJid = msg.key.remoteJidAlt || msg.key.participantAlt;
+            if (altJid && altJid.includes('@s.whatsapp.net')) {
+                const lidNum = chatId.split('@')[0].split(':')[0];
+                this.lidToJidMap.set(chatId, altJid);
+                this.lidToJidMap.set(lidNum, altJid);
+                this._saveLidMap();
+                console.log(`📇 Mapeo capturado de msg.key: ${chatId} -> ${altJid}`);
+            }
+        }
 
         const body = msg.message.conversation || msg.message.extendedTextMessage?.text;
         if (!body) return;
@@ -430,15 +436,27 @@ class BotInstance {
                 // Enviar el mensaje
                 const sentMsg = await this.sock.sendMessage(sendToJid, { text: formattedReply }, { quoted: originalMsg });
 
-                // Si estamos enviando a un LID, registrar para retry automático vía ACK
-                if (chatId.includes('@lid') && sentMsg?.key?.id) {
-                    this.pendingReplies.set(sentMsg.key.id, {
-                        chatId,
-                        cleanId,
-                        text: formattedReply
-                    });
-                    // Limpiar después de 30 segundos si no hubo ACK
-                    setTimeout(() => this.pendingReplies.delete(sentMsg.key.id), 30000);
+                // Intentar capturar el JID real alternativo desde la respuesta si enviamos a un LID
+                if (chatId.includes('@lid')) {
+                    const sentAltJid = sentMsg?.key?.remoteJidAlt || sentMsg?.key?.participantAlt;
+                    if (sentAltJid && sentAltJid.includes('@s.whatsapp.net')) {
+                        this.lidToJidMap.set(chatId, sentAltJid);
+                        const lidNum = chatId.split('@')[0].split(':')[0];
+                        this.lidToJidMap.set(lidNum, sentAltJid);
+                        this._saveLidMap();
+                        console.log(`📇 Mapeo capturado al enviar mensaje: ${chatId} -> ${sentAltJid}`);
+                    }
+
+                    // Registrar para retry automático vía ACK
+                    if (sentMsg?.key?.id) {
+                        this.pendingReplies.set(sentMsg.key.id, {
+                            chatId,
+                            cleanId,
+                            text: formattedReply
+                        });
+                        // Limpiar después de 30 segundos si no hubo ACK
+                        setTimeout(() => this.pendingReplies.delete(sentMsg.key.id), 30000);
+                    }
                 }
 
                 // Si la IA activó el handover, silenciamos al bot para este usuario
