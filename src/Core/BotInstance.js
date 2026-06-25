@@ -1,9 +1,3 @@
-const {
-    default: makeWASocket,
-    useMultiFileAuthState,
-    DisconnectReason,
-    fetchLatestBaileysVersion
-} = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
@@ -159,6 +153,15 @@ class BotInstance {
 
     async initialize() {
         console.log(`Cargando sesión desde: ${this.authDir}`);
+
+        // Importación dinámica de Baileys para dar soporte a ESM en entorno CommonJS (Node 16)
+        const {
+            default: makeWASocket,
+            useMultiFileAuthState,
+            DisconnectReason,
+            fetchLatestBaileysVersion
+        } = await import('@whiskeysockets/baileys');
+
         const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
         const { version } = await fetchLatestBaileysVersion();
 
