@@ -23,7 +23,11 @@ class BotInstance {
         this.store = makeInMemoryStore({});
         this.mutedFile = path.join(__dirname, `../../muted-users.json`);
         this.mutedUsers = new Map();
+        this.lidToJidMap = new Map();  // Mapa LID -> JID real (@s.whatsapp.net)
+        this.pendingReplies = new Map(); // Mensajes pendientes de ACK para retry
+        this.lidMapFile = path.join(__dirname, `../../lid-map-${sessionId}.json`);
         this._loadMutedUsers();
+        this._loadLidMap();
     }
 
     _loadMutedUsers() {
@@ -43,6 +47,47 @@ class BotInstance {
             fs.writeFileSync(this.mutedFile, JSON.stringify(data), 'utf8');
         } catch (e) {
             console.error('Error guardando usuarios silenciados:', e.message);
+        }
+    }
+
+    _loadLidMap() {
+        try {
+            if (fs.existsSync(this.lidMapFile)) {
+                const data = JSON.parse(fs.readFileSync(this.lidMapFile, 'utf8'));
+                this.lidToJidMap = new Map(Object.entries(data));
+                console.log(`📇 [${this.sessionId}] Mapa LID cargado: ${this.lidToJidMap.size} entradas`);
+            }
+        } catch (e) {
+            console.error('Error cargando mapa LID:', e.message);
+        }
+    }
+
+    _saveLidMap() {
+        try {
+            const data = Object.fromEntries(this.lidToJidMap);
+            fs.writeFileSync(this.lidMapFile, JSON.stringify(data), 'utf8');
+        } catch (e) {
+            // Silencioso para no saturar logs
+        }
+    }
+
+    _updateLidMapFromContacts(contacts) {
+        let newEntries = 0;
+        for (const contact of contacts) {
+            const jid = contact.id || contact.jid;
+            const lid = contact.lid;
+            if (lid && jid && jid.includes('@s.whatsapp.net')) {
+                // Guardar mapeo completo (lid@lid -> jid@s.whatsapp.net)
+                this.lidToJidMap.set(lid, jid);
+                // Guardar también solo la parte numérica del LID
+                const lidNum = lid.split('@')[0].split(':')[0];
+                this.lidToJidMap.set(lidNum, jid);
+                newEntries++;
+            }
+        }
+        if (newEntries > 0) {
+            console.log(`📇 [${this.sessionId}] +${newEntries} mapeos LID->JID (Total: ${this.lidToJidMap.size})`);
+            this._saveLidMap();
         }
     }
 
@@ -70,39 +115,45 @@ class BotInstance {
     // Resolver LID a JID real para enviar mensajes
     _resolveJidForSending(chatId) {
         if (!chatId || !chatId.includes('@lid')) {
-            return chatId; // Ya es un JID normal, no hacer nada
+            return chatId; // Ya es un JID normal
         }
 
-        // 1. Buscar en contactos del store
+        const lidNum = chatId.split('@')[0].split(':')[0];
+
+        // 1. Buscar en nuestro mapa LID->JID persistido
+        if (this.lidToJidMap.has(chatId)) {
+            const resolved = this.lidToJidMap.get(chatId);
+            console.log(`📱 LID resuelto via mapa: ${chatId} -> ${resolved}`);
+            return resolved;
+        }
+        if (this.lidToJidMap.has(lidNum)) {
+            const resolved = this.lidToJidMap.get(lidNum);
+            console.log(`📱 LID resuelto via mapa (num): ${lidNum} -> ${resolved}`);
+            return resolved;
+        }
+
+        // 2. Buscar en contactos del store
         const contact = this.store.contacts[chatId];
         if (contact && contact.id && contact.id.includes('@s.whatsapp.net')) {
-            console.log(`📱 LID resuelto via contactos: ${chatId} -> ${contact.id}`);
+            this.lidToJidMap.set(chatId, contact.id);
+            this.lidToJidMap.set(lidNum, contact.id);
+            this._saveLidMap();
+            console.log(`📱 LID resuelto via store: ${chatId} -> ${contact.id}`);
             return contact.id;
         }
 
-        // 2. Intentar usar lidToJid del socket si existe
-        if (this.sock.lidToJid) {
-            try {
-                const resolved = this.sock.lidToJid(chatId);
-                if (resolved) {
-                    console.log(`📱 LID resuelto via lidToJid: ${chatId} -> ${resolved}`);
-                    return resolved;
-                }
-            } catch (e) {
-                // lidToJid no disponible o falló, continuar
-            }
-        }
-
-        // 3. Buscar en todos los contactos por coincidencia parcial del ID numérico
-        const lidNum = chatId.split('@')[0].split(':')[0];
+        // 3. Buscar en todos los contactos del store por LID inverso
         for (const [key, val] of Object.entries(this.store.contacts || {})) {
             if (key.includes('@s.whatsapp.net') && val.lid && val.lid.includes(lidNum)) {
+                this.lidToJidMap.set(chatId, key);
+                this.lidToJidMap.set(lidNum, key);
+                this._saveLidMap();
                 console.log(`📱 LID resuelto via búsqueda inversa: ${chatId} -> ${key}`);
                 return key;
             }
         }
 
-        console.log(`⚠️ No se pudo resolver LID: ${chatId}, se intentará enviar directamente`);
+        console.log(`⚠️ No se pudo resolver LID: ${chatId} - el mensaje podría no entregarse`);
         return chatId;
     }
 
@@ -136,6 +187,49 @@ class BotInstance {
 
         this.sock.ev.on('creds.update', saveCreds);
         this.store.bind(this.sock.ev); // Vincular el almacén a los eventos del bot
+
+        // === MAPEO LID -> JID: Escuchar sincronización de contactos ===
+        this.sock.ev.on('contacts.set', ({ contacts }) => {
+            console.log(`📇 [${this.sessionId}] contacts.set recibido (${contacts?.length || 0} contactos)`);
+            if (contacts) this._updateLidMapFromContacts(contacts);
+        });
+
+        this.sock.ev.on('contacts.update', (updates) => {
+            this._updateLidMapFromContacts(updates);
+        });
+
+        this.sock.ev.on('contacts.upsert', (contacts) => {
+            this._updateLidMapFromContacts(contacts);
+        });
+
+        // Capturar historial de mensajes (sync inicial)
+        this.sock.ev.on('messaging-history.set', ({ contacts }) => {
+            if (contacts && contacts.length) {
+                console.log(`📇 [${this.sessionId}] messaging-history.set: ${contacts.length} contactos`);
+                this._updateLidMapFromContacts(contacts);
+            }
+        });
+
+        // === RETRY: Detectar error 463 en ACK y reintentar ===
+        this.sock.ev.on('messages.update', (updates) => {
+            for (const update of updates) {
+                const msgId = update.key?.id;
+                // status 0 o ERROR en Baileys puede indicar fallo de envío
+                if (msgId && this.pendingReplies.has(msgId)) {
+                    const status = update.update?.status;
+                    // status: 1=pending, 2=sent/server, 3=delivered, 4=read, 0/5=error
+                    if (status === 0 || status === 5) {
+                        const pending = this.pendingReplies.get(msgId);
+                        this.pendingReplies.delete(msgId);
+                        console.log(`🔄 ACK error detectado para msg ${msgId}, reintentando con JID alternativo...`);
+                        this._retryWithAlternativeJid(pending);
+                    } else if (status >= 2) {
+                        // Mensaje entregado correctamente, limpiar
+                        this.pendingReplies.delete(msgId);
+                    }
+                }
+            }
+        });
 
         this.sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect, qr } = update;
@@ -185,6 +279,26 @@ class BotInstance {
         });
 
         this.sock.ev.on('messages.upsert', async (m) => this._handleMessages(m));
+    }
+
+    async _retryWithAlternativeJid(pending) {
+        try {
+            const { chatId, cleanId, text } = pending;
+            // Construir JID con el cleanId (número limpio)
+            const altJid = cleanId + '@s.whatsapp.net';
+            console.log(`🔄 Reintentando envío a JID alternativo: ${altJid} (original: ${chatId})`);
+            const result = await this.sock.sendMessage(altJid, { text });
+            if (result) {
+                // Guardar el mapeo para futuros mensajes
+                this.lidToJidMap.set(chatId, altJid);
+                const lidNum = chatId.split('@')[0].split(':')[0];
+                this.lidToJidMap.set(lidNum, altJid);
+                this._saveLidMap();
+                console.log(`✅ Retry exitoso! Mapeo guardado: ${chatId} -> ${altJid}`);
+            }
+        } catch (error) {
+            console.error(`❌ Retry también falló:`, error.message);
+        }
     }
 
     async _handleMessages(m) {
@@ -313,27 +427,24 @@ class BotInstance {
                 console.log(`🤖 Respondiendo a ${cleanId} (JID: ${sendToJid}): "${reply.substring(0, 50)}..."`);
                 const formattedReply = reply.replace(/\*\*/g, '*');
 
-                try {
-                    await this.sock.sendMessage(sendToJid, { text: formattedReply }, { quoted: originalMsg });
-                } catch (sendError) {
-                    // Si falla con el JID resuelto, intentar con el chatId original (LID)
-                    if (sendToJid !== chatId) {
-                        console.log(`⚠️ Fallo al enviar a ${sendToJid}, reintentando con LID original: ${chatId}`);
-                        await this.sock.sendMessage(chatId, { text: formattedReply }, { quoted: originalMsg });
-                    } else if (chatId.includes('@lid')) {
-                        // Último intento: construir JID @s.whatsapp.net con el número limpio
-                        const fallbackJid = cleanId + '@s.whatsapp.net';
-                        console.log(`⚠️ Fallo al enviar a LID, último intento con: ${fallbackJid}`);
-                        await this.sock.sendMessage(fallbackJid, { text: formattedReply });
-                    } else {
-                        throw sendError;
-                    }
+                // Enviar el mensaje
+                const sentMsg = await this.sock.sendMessage(sendToJid, { text: formattedReply }, { quoted: originalMsg });
+
+                // Si estamos enviando a un LID, registrar para retry automático vía ACK
+                if (chatId.includes('@lid') && sentMsg?.key?.id) {
+                    this.pendingReplies.set(sentMsg.key.id, {
+                        chatId,
+                        cleanId,
+                        text: formattedReply
+                    });
+                    // Limpiar después de 30 segundos si no hubo ACK
+                    setTimeout(() => this.pendingReplies.delete(sentMsg.key.id), 30000);
                 }
 
                 // Si la IA activó el handover, silenciamos al bot para este usuario
                 if (handover) {
                     const now = Date.now();
-                    const expiresAt = now + (24 * 60 * 60 * 1000); // 24 horas de silencio por defecto para handover
+                    const expiresAt = now + (24 * 60 * 60 * 1000);
                     this.mutedUsers.set(cleanId, expiresAt);
                     this._saveMutedUsers();
                     console.log(`🔇 Mando humano activado via IA para: ${cleanId}. Bot silenciado por 24h.`);
@@ -345,6 +456,20 @@ class BotInstance {
             await this.sock.sendPresenceUpdate('paused', sendToJid).catch(() => {});
         } catch (error) {
             console.error(`❌ Error in processAndReply para ${cleanId}:`, error.message);
+            // Si el envío falló con excepción y era LID, intentar con @s.whatsapp.net
+            if (chatId.includes('@lid')) {
+                try {
+                    const fallbackJid = cleanId + '@s.whatsapp.net';
+                    console.log(`🔄 Fallback: intentando enviar a ${fallbackJid}`);
+                    const replyData = await this.apiService.sendMessage(content, cleanId);
+                    if (replyData?.reply) {
+                        const formattedReply = replyData.reply.replace(/\*\*/g, '*');
+                        await this.sock.sendMessage(fallbackJid, { text: formattedReply });
+                    }
+                } catch (retryErr) {
+                    console.error(`❌ Fallback también falló:`, retryErr.message);
+                }
+            }
             await this.sock.sendPresenceUpdate('paused', chatId).catch(() => {});
         }
     }
