@@ -67,6 +67,45 @@ class BotInstance {
         return idPart;
     }
 
+    // Resolver LID a JID real para enviar mensajes
+    _resolveJidForSending(chatId) {
+        if (!chatId || !chatId.includes('@lid')) {
+            return chatId; // Ya es un JID normal, no hacer nada
+        }
+
+        // 1. Buscar en contactos del store
+        const contact = this.store.contacts[chatId];
+        if (contact && contact.id && contact.id.includes('@s.whatsapp.net')) {
+            console.log(`📱 LID resuelto via contactos: ${chatId} -> ${contact.id}`);
+            return contact.id;
+        }
+
+        // 2. Intentar usar lidToJid del socket si existe
+        if (this.sock.lidToJid) {
+            try {
+                const resolved = this.sock.lidToJid(chatId);
+                if (resolved) {
+                    console.log(`📱 LID resuelto via lidToJid: ${chatId} -> ${resolved}`);
+                    return resolved;
+                }
+            } catch (e) {
+                // lidToJid no disponible o falló, continuar
+            }
+        }
+
+        // 3. Buscar en todos los contactos por coincidencia parcial del ID numérico
+        const lidNum = chatId.split('@')[0].split(':')[0];
+        for (const [key, val] of Object.entries(this.store.contacts || {})) {
+            if (key.includes('@s.whatsapp.net') && val.lid && val.lid.includes(lidNum)) {
+                console.log(`📱 LID resuelto via búsqueda inversa: ${chatId} -> ${key}`);
+                return key;
+            }
+        }
+
+        console.log(`⚠️ No se pudo resolver LID: ${chatId}, se intentará enviar directamente`);
+        return chatId;
+    }
+
     _isAdmin(cleanId) {
         const adminNumbersStr = process.env.ADMIN_NUMBERS || '';
         const adminNumbers = adminNumbersStr.split(',').map(n => n.trim());
@@ -261,16 +300,35 @@ class BotInstance {
 
     async _processAndReply(originalMsg, chatId, cleanId, content) {
         try {
-            await this.sock.sendPresenceUpdate('composing', chatId);
+            // Resolver LID a JID real antes de enviar
+            const sendToJid = this._resolveJidForSending(chatId);
+
+            await this.sock.sendPresenceUpdate('composing', sendToJid).catch(() => {});
 
             const replyData = await this.apiService.sendMessage(content, cleanId);
             const reply = replyData?.reply;
             const handover = replyData?.handover;
 
             if (reply && reply.trim().length > 0) {
-                console.log(`🤖 Respondiendo a ${cleanId}: "${reply.substring(0, 50)}..."`);
+                console.log(`🤖 Respondiendo a ${cleanId} (JID: ${sendToJid}): "${reply.substring(0, 50)}..."`);
                 const formattedReply = reply.replace(/\*\*/g, '*');
-                await this.sock.sendMessage(chatId, { text: formattedReply }, { quoted: originalMsg });
+
+                try {
+                    await this.sock.sendMessage(sendToJid, { text: formattedReply }, { quoted: originalMsg });
+                } catch (sendError) {
+                    // Si falla con el JID resuelto, intentar con el chatId original (LID)
+                    if (sendToJid !== chatId) {
+                        console.log(`⚠️ Fallo al enviar a ${sendToJid}, reintentando con LID original: ${chatId}`);
+                        await this.sock.sendMessage(chatId, { text: formattedReply }, { quoted: originalMsg });
+                    } else if (chatId.includes('@lid')) {
+                        // Último intento: construir JID @s.whatsapp.net con el número limpio
+                        const fallbackJid = cleanId + '@s.whatsapp.net';
+                        console.log(`⚠️ Fallo al enviar a LID, último intento con: ${fallbackJid}`);
+                        await this.sock.sendMessage(fallbackJid, { text: formattedReply });
+                    } else {
+                        throw sendError;
+                    }
+                }
 
                 // Si la IA activó el handover, silenciamos al bot para este usuario
                 if (handover) {
@@ -284,10 +342,10 @@ class BotInstance {
                 console.log(`😶 Backend devolvió respuesta VACÍA para ${cleanId}`);
             }
 
-            await this.sock.sendPresenceUpdate('paused', chatId);
+            await this.sock.sendPresenceUpdate('paused', sendToJid).catch(() => {});
         } catch (error) {
-            console.error('Error in processAndReply:', error.message);
-            await this.sock.sendPresenceUpdate('paused', chatId);
+            console.error(`❌ Error in processAndReply para ${cleanId}:`, error.message);
+            await this.sock.sendPresenceUpdate('paused', chatId).catch(() => {});
         }
     }
 }
